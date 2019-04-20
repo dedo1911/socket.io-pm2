@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "",
   "license": "MIT",
+  "author": {
+    "name": "dedo1911"
+  },
   "repository": {
     "type": "git",
     "url": "git@github.com:dedo1911/socket.io-pm2.git"
