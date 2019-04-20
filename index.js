@@ -50,12 +50,12 @@ function adapter(opts) {
     publish: (channel, msg) => {
       pm2.connect(errConn => {
         if (errConn) {
-          this.emit('error', errConn)
+          // this.emit('error', errConn)
           return
         }
         pm2.list((errList, data) => {
           if (errList) {
-            this.emit('error', errList)
+            // this.emit('error', errList)
             return
           }
           const currentProcess = data.find(x => x.pm2_env.pm_id === currentPmid)
@@ -124,7 +124,6 @@ function adapter(opts) {
         return messageChannel.substr(0, subscribedChannel.length) === subscribedChannel;
       }
     }
-    this.pubClient = pub;
 
     thisAdapter = this
     process.on('message', packet => onPacket.call(thisAdapter, packet))
@@ -754,7 +753,6 @@ function adapter(opts) {
   };
 
   PM2Adapter.uid = uid;
-  PM2Adapter.pubClient = pub;
   PM2Adapter.prefix = prefix;
   PM2Adapter.requestsTimeout = requestsTimeout;
 
