@@ -4,10 +4,10 @@
  */
 
 var uid2 = require('uid2');
-var redis = require('redis').createClient;
 var msgpack = require('notepack.io');
 var Adapter = require('socket.io-adapter');
-var debug = require('debug')('socket.io-redis');
+var pm2 = require('pm2')
+var debug = require('debug')('socket.io-pm2');
 
 /**
  * Module exports.
@@ -30,40 +30,67 @@ var requestTypes = {
 };
 
 /**
- * Returns a redis Adapter class.
+ * Returns a PM2 Adapter class.
  *
- * @param {String} optional, redis uri
- * @return {RedisAdapter} adapter
+ * @return {PM2Adapter} adapter
  * @api public
  */
 
-function adapter(uri, opts) {
+ let thisAdapter
+
+function adapter(opts) {
   opts = opts || {};
 
-  // handle options only
-  if ('object' == typeof uri) {
-    opts = uri;
-    uri = null;
-  }
-
   // opts
-  var pub = opts.pubClient;
-  var sub = opts.subClient;
   var prefix = opts.key || 'socket.io';
   var requestsTimeout = opts.requestsTimeout || 5000;
+  var currentPmid = parseInt(process.env.pm_id, 10)
 
-  // init clients if needed
-  function createClient() {
-    if (uri) {
-      // handle uri string
-      return redis(uri, opts);
-    } else {
-      return redis(opts);
+  var pub = {
+    publish: (channel, msg) => {
+      pm2.connect(errConn => {
+        if (errConn) {
+          this.emit('error', errConn)
+          return
+        }
+        pm2.list((errList, data) => {
+          if (errList) {
+            this.emit('error', errList)
+            return
+          }
+          const currentProcess = data.find(x => x.pm2_env.pm_id === currentPmid)
+          const processes = data.filter(x => x.pm2_env.pm_exec_path === currentProcess.pm2_env.pm_exec_path)
+          processes.forEach(pm2process => {
+            const target = pm2process.pm2_env.pm_id
+            const packet = {
+              type: 'message',
+              data: msg,
+              topic: channel
+            }
+            if (currentPmid === target) {
+              onPacket.call(thisAdapter, packet)
+            } else {
+              pm2.sendDataToProcessId(target, packet)
+            }
+          })
+          pm2.disconnect(() => { })
+        })
+      })
+    },
+    numsub: (cb) => {
+      pm2.connect(errConn => {
+        if (errConn) return cb(errConn)
+        pm2.list((errList, data) => {
+          if (errList) return cb(errList)
+          const currentProcess = data.find(x => x.pm2_env.pm_id === currentPmid)
+          const numsub = data.filter(x => x.pm2_env.pm_exec_path === currentProcess.pm2_env.pm_exec_path)
+          cb(null, numsub.length)
+          pm2.disconnect(() => { })
+        })
+      })
     }
-  }
 
-  if (!pub) pub = createClient();
-  if (!sub) sub = createClient();
+  };
 
   // this server's key
   var uid = uid2(6);
@@ -75,7 +102,7 @@ function adapter(uri, opts) {
    * @api public
    */
 
-  function Redis(nsp){
+  function PM2Adapter(nsp){
     Adapter.call(this, nsp);
 
     this.uid = uid;
@@ -98,34 +125,26 @@ function adapter(uri, opts) {
       }
     }
     this.pubClient = pub;
-    this.subClient = sub;
 
-    var self = this;
+    thisAdapter = this
+    process.on('message', packet => onPacket.call(thisAdapter, packet))
+  }
 
-    sub.psubscribe(this.channel + '*', function(err){
-      if (err) self.emit('error', err);
-    });
-
-    sub.on('pmessageBuffer', this.onmessage.bind(this));
-
-    sub.subscribe([this.requestChannel, this.responseChannel], function(err){
-      if (err) self.emit('error', err);
-    });
-
-    sub.on('messageBuffer', this.onrequest.bind(this));
-
-    function onError(err) {
-      self.emit('error', err);
-    }
-    pub.on('error', onError);
-    sub.on('error', onError);
+  function onPacket (packet) {
+    const channel = packet.topic
+    if (channel.startsWith(this.channel))
+      this.onmessage(null, packet.topic, packet.data)
+    
+    if (this.channelMatches(channel, this.requestChannel) ||
+        this.channelMatches(channel, this.responseChannel))
+        this.onrequest(packet.topic, packet.data)
   }
 
   /**
    * Inherits from `Adapter`.
    */
 
-  Redis.prototype.__proto__ = Adapter.prototype;
+  PM2Adapter.prototype.__proto__ = Adapter.prototype;
 
   /**
    * Called with a subscription message
@@ -133,9 +152,9 @@ function adapter(uri, opts) {
    * @api private
    */
 
-  Redis.prototype.onmessage = function(pattern, channel, msg){
+  PM2Adapter.prototype.onmessage = function(pattern, channel, msg){
     channel = channel.toString();
-
+    
     if (!this.channelMatches(channel, this.channel)) {
       return debug('ignore different channel');
     }
@@ -145,13 +164,12 @@ function adapter(uri, opts) {
       return debug('ignore unknown room %s', room);
     }
 
-    var args = msgpack.decode(msg);
+    var args = msgpack.decode(Buffer.from(msg));
     var packet;
-
     if (uid === args.shift()) return debug('ignore same uid');
 
     packet = args[0];
-
+    
     if (packet && packet.nsp === undefined) {
       packet.nsp = '/';
     }
@@ -171,7 +189,7 @@ function adapter(uri, opts) {
    * @api private
    */
 
-  Redis.prototype.onrequest = function(channel, msg){
+  PM2Adapter.prototype.onrequest = function(channel, msg){
     channel = channel.toString();
 
     if (this.channelMatches(channel, this.responseChannel)) {
@@ -190,7 +208,7 @@ function adapter(uri, opts) {
       return;
     }
 
-    debug('received request %j', request);
+    debug('%d -> received request %j', process.env.pm_id, request);
 
     switch (request.type) {
 
@@ -304,7 +322,7 @@ function adapter(uri, opts) {
    * @api private
    */
 
-  Redis.prototype.onresponse = function(channel, msg){
+  PM2Adapter.prototype.onresponse = function(channel, msg){
     var self = this;
     var response;
 
@@ -322,7 +340,7 @@ function adapter(uri, opts) {
       return;
     }
 
-    debug('received response %j', response);
+    debug('%d -> received response %j', process.env.pm_id, response);
 
     var request = self.requests[requestid];
 
@@ -402,7 +420,7 @@ function adapter(uri, opts) {
    * @api public
    */
 
-  Redis.prototype.broadcast = function(packet, opts, remote){
+  PM2Adapter.prototype.broadcast = function(packet, opts, remote) {
     packet.nsp = this.nsp.name;
     if (!(remote || (opts && opts.flags && opts.flags.local))) {
       var msg = msgpack.encode([uid, packet, opts]);
@@ -424,7 +442,7 @@ function adapter(uri, opts) {
    * @api public
    */
 
-  Redis.prototype.clients = function(rooms, fn){
+  PM2Adapter.prototype.clients = function(rooms, fn){
     if ('function' == typeof rooms){
       fn = rooms;
       rooms = null;
@@ -435,14 +453,13 @@ function adapter(uri, opts) {
     var self = this;
     var requestid = uid2(6);
 
-    pub.send_command('pubsub', ['numsub', self.requestChannel], function(err, numsub){
+    pub.numsub(function(err, numsub){
       if (err) {
         self.emit('error', err);
         if (fn) fn(err);
         return;
       }
 
-      numsub = parseInt(numsub[1], 10);
       debug('waiting for %d responses to "clients" request', numsub);
 
       var request = JSON.stringify({
@@ -479,7 +496,7 @@ function adapter(uri, opts) {
    * @api public
    */
 
-  Redis.prototype.clientRooms = function(id, fn){
+  PM2Adapter.prototype.clientRooms = function(id, fn){
 
     var self = this;
     var requestid = uid2(6);
@@ -519,12 +536,12 @@ function adapter(uri, opts) {
    * @api public
    */
 
-  Redis.prototype.allRooms = function(fn){
+  PM2Adapter.prototype.allRooms = function(fn){
 
     var self = this;
     var requestid = uid2(6);
 
-    pub.send_command('pubsub', ['numsub', self.requestChannel], function(err, numsub){
+    pub.numsub(function(err, numsub){
       if (err) {
         self.emit('error', err);
         if (fn) fn(err);
@@ -568,7 +585,7 @@ function adapter(uri, opts) {
    * @api public
    */
 
-  Redis.prototype.remoteJoin = function(id, room, fn){
+  PM2Adapter.prototype.remoteJoin = function(id, room, fn){
 
     var self = this;
     var requestid = uid2(6);
@@ -610,7 +627,7 @@ function adapter(uri, opts) {
    * @api public
    */
 
-  Redis.prototype.remoteLeave = function(id, room, fn){
+  PM2Adapter.prototype.remoteLeave = function(id, room, fn){
 
     var self = this;
     var requestid = uid2(6);
@@ -650,7 +667,7 @@ function adapter(uri, opts) {
    * @param {Function} callback
    */
 
-  Redis.prototype.remoteDisconnect = function(id, close, fn) {
+  PM2Adapter.prototype.remoteDisconnect = function(id, close, fn) {
     var self = this;
     var requestid = uid2(6);
 
@@ -691,7 +708,7 @@ function adapter(uri, opts) {
    * @api public
    */
 
-  Redis.prototype.customRequest = function(data, fn){
+  PM2Adapter.prototype.customRequest = function(data, fn){
     if (typeof data === 'function'){
       fn = data;
       data = null;
@@ -700,7 +717,7 @@ function adapter(uri, opts) {
     var self = this;
     var requestid = uid2(6);
 
-    pub.send_command('pubsub', ['numsub', self.requestChannel], function(err, numsub){
+    pub.numsub(function(err, numsub){
       if (err) {
         self.emit('error', err);
         if (fn) fn(err);
@@ -736,12 +753,11 @@ function adapter(uri, opts) {
     });
   };
 
-  Redis.uid = uid;
-  Redis.pubClient = pub;
-  Redis.subClient = sub;
-  Redis.prefix = prefix;
-  Redis.requestsTimeout = requestsTimeout;
+  PM2Adapter.uid = uid;
+  PM2Adapter.pubClient = pub;
+  PM2Adapter.prefix = prefix;
+  PM2Adapter.requestsTimeout = requestsTimeout;
 
-  return Redis;
+  return PM2Adapter;
 
 }

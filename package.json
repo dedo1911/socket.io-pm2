@@ -1,11 +1,11 @@
 {
-  "name": "socket.io-redis",
-  "version": "5.2.0",
+  "name": "socket.io-pm2",
+  "version": "1.0.0",
   "description": "",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git@github.com:socketio/socket.io-redis.git"
+    "url": "git@github.com:dedo1911/socket.io-pm2.git"
   },
   "files": [
     "index.js"
@@ -14,16 +14,15 @@
     "test": "mocha"
   },
   "dependencies": {
-    "debug": "~3.1.0",
-    "notepack.io": "~2.1.2",
-    "redis": "~2.8.0",
-    "socket.io-adapter": "~1.1.0",
+    "debug": "~4.1.1",
+    "notepack.io": "~2.2.0",
+    "pm2": "^3.5.0",
+    "socket.io-adapter": "~1.1.1",
     "uid2": "0.0.3"
   },
   "devDependencies": {
     "expect.js": "0.3.1",
-    "ioredis": "^4.0.0",
-    "mocha": "^3.4.2",
+    "mocha": "^6.1.4",
     "socket.io": "latest",
     "socket.io-client": "latest"
   }
